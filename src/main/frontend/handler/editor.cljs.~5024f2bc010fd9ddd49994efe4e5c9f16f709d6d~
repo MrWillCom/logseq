@@ -852,9 +852,9 @@
   (let [repo (or repo (state/get-current-repo))
         block (db/pull repo '[*] [:block/uuid uuid])]
     (when block
-      (outliner-tx/transact!
-        {:outliner-op :delete-blocks}
-        (outliner-core/delete-blocks! [block] {:children? children?})))))
+      (->
+       (outliner-core/block block)
+       (outliner-core/delete-node children?)))))
 
 (defn- move-to-prev-block
   [repo sibling-block format id value]
@@ -902,6 +902,19 @@
                    (move-to-prev-block repo sibling-block format id value)))))))))
    (state/set-editor-op! nil)))
 
+(defn- get-end-block-parent
+  [end-block blocks]
+  (if-let [parent (let [id (:db/id (:block/parent end-block))]
+                    (some (fn [block] (when (= (:db/id block) id) block)) blocks))]
+    (recur parent blocks)
+    end-block))
+
+(defn- get-top-level-end-node
+  [blocks]
+  (let [end-block (last blocks)
+        end-block-parent (get-end-block-parent end-block blocks)]
+    (outliner-core/block end-block-parent)))
+
 (defn- reorder-blocks
   [blocks]
   (if (<= (count blocks) 1)
@@ -926,12 +939,14 @@
             lookup-refs (map (fn [id] [:block/uuid id]) block-uuids)
             blocks (db/pull-many repo '[*] lookup-refs)
             blocks (reorder-blocks blocks)
+            start-node (outliner-core/block (first blocks))
+            end-node (get-top-level-end-node blocks)
             block (first blocks)
             block-parent (get uuid->dom-block (:block/uuid block))
             sibling-block (when block-parent (util/get-prev-block-non-collapsed-non-embed block-parent))]
-        (outliner-tx/transact!
-          {:outliner-op :delete-blocks}
-          (outliner-core/delete-blocks! blocks {}))
+        (if (= start-node end-node)
+          (delete-block-aux! (first blocks) true)
+          (outliner-core/delete-nodes start-node end-node lookup-refs))
         (when sibling-block
           (move-to-prev-block repo sibling-block
                               (:block/format block)
@@ -1752,19 +1767,6 @@
               blocks (filter #(= (:block/parent %) (:block/parent (first blocks))) blocks)]
           (when (seq blocks)
             (move-nodes blocks)))))))
-
-(defn- get-end-block-parent
-  [end-block blocks]
-  (if-let [parent (let [id (:db/id (:block/parent end-block))]
-                    (some (fn [block] (when (= (:db/id block) id) block)) blocks))]
-    (recur parent blocks)
-    end-block))
-
-(defn- get-top-level-end-node
-  [blocks]
-  (let [end-block (last blocks)
-        end-block-parent (get-end-block-parent end-block blocks)]
-    (outliner-core/block end-block-parent)))
 
 ;; selections
 (defn on-tab
